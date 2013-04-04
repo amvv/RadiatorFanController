@@ -6,9 +6,12 @@
 // - Calculate the PWM duty cycle based on the read temperatures.
 // - change the output smoothly to the desired setpoint to avoid big bursts in the initial air circulation
 // - Cleanup the code a bit
-
-
 #include <OneWire.h>
+#include <RF12.h>
+#include <Ports.h>
+
+#define  PWM_PIN  (5)
+#define  LED_PIN  (3)
 
 // DS18S20 Temperature chip i/o
 OneWire ds(6);  // on pin 10
@@ -20,14 +23,25 @@ int brightness = 0;    // how bright the LED is
 int fadeAmount = 5;    // how many points to fade the LED by
 int pinstate = false;
 
+typedef struct {
+        unsigned int house;
+  unsigned int device;
+	unsigned int seq;
+	byte intemp;
+	byte outtemp;
+	byte pwm;
+} RadiatorData;
 
+RadiatorData buf;
+byte data_to_send = false;
+int counter = 0;
 void setup(void) {
   // initialize inputs/outputs
   // start serial port
   Serial.begin(9600);
-  pinMode(5, OUTPUT);
-  pinMode(3, OUTPUT);
-  digitalWrite(3, pinstate);
+  pinMode(PWM_PIN, OUTPUT);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, pinstate);
   
   
   byte i,k = 0;
@@ -71,15 +85,27 @@ ds.reset_search();
       Serial.print("finished serialisation");
 Serial.print((int )k);
       Serial.print("devices");
+
+  rf12_initialize(11, RF12_868MHZ, 212); 
+  
+  
+  buf.house = 192;
+  buf.device = 10;
+  buf.seq = 1;
+  
+  rf12_sleep(0);
+
+
+
 }
 
 void loop(void) {
   byte i, k=0;
   byte present = 0;
   byte data[12];
-  int HighByte, LowByte, TReading, SignBit, Tc_100, Whole, Fract;
+  int HighByte, LowByte, TReading, SignBit, Tc_100, Whole, Fract, pwm;
   float temperatures[2];
-  float delta;
+  float delta, maximum;
 
 for (k=0; k<2;k++)
 {
@@ -133,26 +159,59 @@ delta = abs(temperatures[0] - temperatures[1]);
 
 Serial.print(delta);
   
-Serial.print("\n");
- 
+maximum = max(temperatures[0], temperatures[1]);
+Serial.print(maximum);
+  
+
+pwm = 0;
+
+if (maximum > 25.0)
+{
+  pwm = 6*((int)(maximum)) - 25;
+  if (pwm > 255)
+  {
+    pwm = 255;
+  }
+  digitalWrite(LED_PIN, false);
+}
+else
+{
+  digitalWrite(LED_PIN, true);
+}
+Serial.print(pwm);
+Serial.println("pwm");
  
  // here control of the PWM
  
  
-   analogWrite(5, brightness);    
+   analogWrite(PWM_PIN, pwm);    
 
-  // change the brightness for next time through the loop:
-  brightness = brightness + fadeAmount;
+counter = counter + 1;
+if (counter == 10)
+{
+  data_to_send = true;
+  counter = 0;
+}
 
-  // reverse the direction of the fading at the ends of the fade: 
-  if (brightness == 0 || brightness == 255) {
-    delay(2000);
-    fadeAmount = -fadeAmount ; 
-    pinstate = !pinstate;
-    digitalWrite(3, pinstate);
-  }     
-  // wait for 30 milliseconds to see the dimming effect    
-  //delay(30);                            
 
+  if (data_to_send == true)
+  {
+    buf.intemp = temperatures[0];
+    buf.outtemp= temperatures[1];
+    buf.pwm = pwm;
+    data_to_send = false;
+    
+    rf12_sleep(-1);
+    buf.seq++;
+      while (!rf12_canSend())	// wait until sending is allowed
+       rf12_recvDone();
+
+       rf12_sendStart(0, &buf, sizeof buf);
+
+      while (!rf12_canSend())	// wait until sending has been completed
+         rf12_recvDone();
+         delay(5);
+      rf12_sleep(0);
+  }
   
 }
